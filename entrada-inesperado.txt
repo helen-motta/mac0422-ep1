@@ -1,0 +1,6 @@
+docker_daemon 40 0 30
+backup_agent 120 0 40
+antivirus_scan 50 2 20
+critical_patch 15 5 10
+mysql_service 25 10 5
+nginx_worker 30 15 2

@@ -1,0 +1,31 @@
+# Instruções para Compilação e Execução
+
+## Compilação
+Para compilar o programa, utilize o comando abaixo no terminal:
+
+```
+make
+```
+
+Este comando irá gerar o executável `imesh` e `ep1` na raiz do projeto.
+
+## Limpeza
+Para remover os arquivos gerados durante a compilação, utilize o comando:
+
+```
+make clean
+```
+
+## Execução
+Após a compilação, o programa pode ser executado com o seguinte comando:
+
+```
+./imesh
+```
+
+Para executar apenas os escalanadores, utilize:
+```
+./ep1
+```
+
+Certifique-se de que os arquivos de entrada necessários estejam no mesmo diretório do executável, caso sejam utilizados pelo programa.

@@ -1,0 +1,7 @@
+kernel_task 150 0 20
+syslogd 40 2 5
+window_server 120 5 15
+google_chrome 80 10 25
+spotify_client 200 15 10
+vscode_editor 110 20 18
+mdns_responder 60 30 5
