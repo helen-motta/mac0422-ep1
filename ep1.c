@@ -177,7 +177,6 @@ void handle_prioridade(Processo processos[], int total_processos) {
                     (slack == melhor_slack && processos[i].deadline == processos[indice_escolhido].deadline && processos[i].t0 < processos[indice_escolhido].t0)) {
                     melhor_slack = slack;
                     indice_escolhido = i;
-                    printf("Processo escolhido: %s, Slack: %d\n", processos[i].nome, slack);
                 }
             }
         }
