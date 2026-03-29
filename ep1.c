@@ -177,6 +177,7 @@ void handle_prioridade(Processo processos[], int total_processos) {
                     (slack == melhor_slack && processos[i].deadline == processos[indice_escolhido].deadline && processos[i].t0 < processos[indice_escolhido].t0)) {
                     melhor_slack = slack;
                     indice_escolhido = i;
+                    printf("Processo escolhido: %s, Slack: %d\n", processos[i].nome, slack);
                 }
             }
         }
@@ -187,33 +188,20 @@ void handle_prioridade(Processo processos[], int total_processos) {
             continue;
         }
 
-        int slack = processos[indice_escolhido].deadline - tempo_atual - rem_dt[indice_escolhido];
-        int quantums = 1;
-
-        if (rem_dt[indice_escolhido] <= 2) {
-            quantums = rem_dt[indice_escolhido];
-        } else if (slack >= 0) {
-            quantums = (slack / 2) + 1;
-            if (quantums > rem_dt[indice_escolhido]) {
-                quantums = rem_dt[indice_escolhido];
-            }
-            if (quantums > 4) {
-                quantums = 4;
-            }
-        }
+        int quantum = 1;
 
         int num_cores = get_num_cores();
         int core = indice_escolhido % num_cores;
         pthread_t tid;
         TaskParams *args = malloc(sizeof(TaskParams));
         args->processo = &processos[indice_escolhido];
-        args->slice = quantums;
+        args->slice = quantum;
         args->core = core;
 
         pthread_create(&tid, NULL, executar_slice, args);
         pthread_join(tid, NULL);
 
-        rem_dt[indice_escolhido] -= quantums;
+        rem_dt[indice_escolhido] -= quantum;
         tempo_atual = (int)(time(NULL) - inicio);
 
         if (rem_dt[indice_escolhido] <= 0) {
@@ -265,7 +253,7 @@ int main(int argc, char *argv[]) {
     if (escalonador == 1) {
         handle_sjf(processos, total_processos);
     } else if (escalonador == 2) {
-        handle_rr(processos, total_processos, 1);
+        handle_rr(processos, total_processos, 3);
     } else if (escalonador == 3) {
         handle_prioridade(processos, total_processos);
     } else {

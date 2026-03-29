@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200112L
 #include "imesh.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,8 @@
 #include <pwd.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 char* get_user_name() {
     uid_t id = getuid();
@@ -124,9 +127,20 @@ int main() {
     char *cmd = NULL;
 
     while (1) {
-    print_prompt_line();
+        print_prompt_line();
 
-    scanf(" %m[^\n]", &cmd);
+        // Substitui scanf por readline para capturar entrada do usuário
+        cmd = readline("");
+        if (cmd == NULL) {
+            printf("\n");
+            break;
+        }
+
+        // Adiciona o comando ao histórico, se não for vazio
+        if (strlen(cmd) > 0) {
+            add_history(cmd);
+        }
+
         if (strcmp(cmd, "pwd") == 0) {
             printf("%s\n", handle_pwd_command());
         }
@@ -159,7 +173,6 @@ int main() {
 
             handle_execute("./ep1", args);
         }
-
         else if (strcmp(cmd, "exit") == 0) {
             free(cmd);
             break;
