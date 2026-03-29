@@ -101,7 +101,7 @@ void handle_kill_command(char* cmd) {
         else {
             perror("imesh: kill: erro inesperado");
         }
-    } 
+    }
 }
 
 int handle_execute(char *path, char **args) {
