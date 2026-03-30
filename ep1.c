@@ -20,17 +20,19 @@ pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int core_process[1024];
 int proc_running[50];
-int preempt_flag[50];
+int fl_preemptar[50];
 int tempo_restante_seg[50];
 int total_processos_concluidos = 0;
 long long inicio_simulacao_seg;
 
+// Retorna o tempo corrente em segundos
 long long current_time_sec() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec;
 }
 
+// Retorna a quantidade de núcleos de CPU disponíveis
 int get_num_cores(void) {
     cpu_set_t set;
     CPU_ZERO(&set);
@@ -38,10 +40,11 @@ int get_num_cores(void) {
     return CPU_COUNT(&set);
 }
 
+// Reinicia variáveis globais e prepara o estado inicial dos processos para escalonamento.
 void init_state(Processo processos[], int total_processos) {
     for (int i = 0; i < 1024; i++) core_process[i] = -1;
     memset(proc_running, 0, sizeof(proc_running));
-    memset(preempt_flag, 0, sizeof(preempt_flag));
+    memset(fl_preemptar, 0, sizeof(fl_preemptar));
     total_processos_concluidos = 0;
     total_preempcoes = 0;
     
@@ -49,10 +52,11 @@ void init_state(Processo processos[], int total_processos) {
     
     for (int i = 0; i < total_processos; i++) {
         processos[i].fl_completo = 0;
-        tempo_restante_seg[i] = processos[i].dt; // Não multiplica mais por 1000
+        tempo_restante_seg[i] = processos[i].dt;
     }
 }
 
+// Thread de execução de um processo: decrementa tempo restante, aplica preempção e marca término.
 void* executar_thread_tick(void* arg) {
     TaskParams *args = (TaskParams*)arg;
     int idx = args->idx;
@@ -68,7 +72,7 @@ void* executar_thread_tick(void* arg) {
 
         pthread_mutex_lock(&state_mutex);
         
-        if (preempt_flag[idx] == 1) {
+        if (fl_preemptar[idx] == 1) {
             core_process[c] = -1;
             proc_running[idx] = 0;
             pthread_mutex_unlock(&state_mutex);
@@ -92,7 +96,6 @@ void* executar_thread_tick(void* arg) {
             pthread_mutex_unlock(&state_mutex);
             break;
         }
-
         pthread_mutex_unlock(&state_mutex);
     }
     
@@ -100,6 +103,7 @@ void* executar_thread_tick(void* arg) {
     return NULL;
 }
 
+// Shortest Job First
 void handle_sjf(Processo processos[], int total_processos) {
     init_state(processos, total_processos);
     int num_cores = get_num_cores();
@@ -129,7 +133,7 @@ void handle_sjf(Processo processos[], int total_processos) {
                 if (indice_menor != -1) {
                     core_process[c] = indice_menor;
                     proc_running[indice_menor] = 1;
-                    preempt_flag[indice_menor] = 0;
+                    fl_preemptar[indice_menor] = 0;
 
                     TaskParams *args = malloc(sizeof(TaskParams));
                     args->processo = &processos[indice_menor];
@@ -147,6 +151,7 @@ void handle_sjf(Processo processos[], int total_processos) {
     }
 }
 
+// Round Robin
 void handle_rr(Processo processos[], int total_processos, int quantum) {
     init_state(processos, total_processos);
     int num_cores = get_num_cores();
@@ -164,9 +169,9 @@ void handle_rr(Processo processos[], int total_processos, int quantum) {
 
         for (int c = 0; c < num_cores; c++) {
             int p = core_process[c];
-            if (p != -1 && !preempt_flag[p] && tempo_restante_seg[p] > 0) {
+            if (p != -1 && !fl_preemptar[p] && tempo_restante_seg[p] > 0) {
                 if (tempo_atual_seg - tempo_inicio_core[c] >= quantum) {
-                    preempt_flag[p] = 1;
+                    fl_preemptar[p] = 1;
                     total_preempcoes++;
                 }
             }
@@ -188,7 +193,7 @@ void handle_rr(Processo processos[], int total_processos, int quantum) {
                 if (indice_escolhido != -1) {
                     core_process[c] = indice_escolhido;
                     proc_running[indice_escolhido] = 1;
-                    preempt_flag[indice_escolhido] = 0;
+                    fl_preemptar[indice_escolhido] = 0;
                     tempo_inicio_core[c] = tempo_atual_seg;
 
                     TaskParams *args = malloc(sizeof(TaskParams));
@@ -207,6 +212,7 @@ void handle_rr(Processo processos[], int total_processos, int quantum) {
     }
 }
 
+// Escalonador de prioridade baseado em slack e deadline
 void handle_prioridade(Processo processos[], int total_processos) {
     init_state(processos, total_processos);
     int num_cores = get_num_cores();
@@ -222,7 +228,7 @@ void handle_prioridade(Processo processos[], int total_processos) {
 
         for (int c = 0; c < num_cores; c++) {
             int p = core_process[c];
-            if (p != -1 && !preempt_flag[p] && tempo_restante_seg[p] > 0) {
+            if (p != -1 && !fl_preemptar[p] && tempo_restante_seg[p] > 0) {
                 int slack_p = processos[p].deadline - tempo_atual_seg - tempo_restante_seg[p];
                 
                 int tem_melhor = 0;
@@ -240,7 +246,7 @@ void handle_prioridade(Processo processos[], int total_processos) {
                 }
 
                 if (tem_melhor) {
-                    preempt_flag[p] = 1;
+                    fl_preemptar[p] = 1;
                     total_preempcoes++;
                 }
             }
@@ -270,7 +276,7 @@ void handle_prioridade(Processo processos[], int total_processos) {
                 if (indice_escolhido != -1) {
                     core_process[c] = indice_escolhido;
                     proc_running[indice_escolhido] = 1;
-                    preempt_flag[indice_escolhido] = 0;
+                    fl_preemptar[indice_escolhido] = 0;
 
                     TaskParams *args = malloc(sizeof(TaskParams));
                     args->processo = &processos[indice_escolhido];
@@ -288,6 +294,7 @@ void handle_prioridade(Processo processos[], int total_processos) {
     }
 }
 
+// Função principal
 int main(int argc, char *argv[]) {
     if (argc != 4) {
         printf("Esperado: %s <escalonador> <arquivo_entrada> <arquivo_saida>\n", argv[0]);

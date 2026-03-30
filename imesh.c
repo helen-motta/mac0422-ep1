@@ -13,6 +13,7 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+// Obtém o nome do usuário atual a partir do UID do processo.
 char* get_user_name() {
     uid_t id = getuid();
     struct passwd *pwd = getpwuid(id);
@@ -24,10 +25,12 @@ char* get_user_name() {
     return pwd->pw_name;
 }
 
+// Obtém o nome do host e preenche buffer fornecido.
 int get_host_name(char* buffer, size_t size) {
     return gethostname(buffer, size);
 }
 
+// Obtém o diretório atual e preenche buffer fornecido.
 char* get_current_dir(char* buffer, size_t size) {
     char* cdir = getcwd(buffer, size);
     if (cdir == NULL) {
@@ -37,6 +40,7 @@ char* get_current_dir(char* buffer, size_t size) {
     return cdir;
 }
 
+// Print o prompt customizado contendo usuário, host e diretório atual.
 int print_prompt_line() {
     char hostname[128];
     char cwd[1024];
@@ -50,18 +54,21 @@ int print_prompt_line() {
     return 0;
 }
 
+// Manipula comando "pwd", retornando o diretório atual como string.
 char* handle_pwd_command() {
     static char cwd[1024];
     if (getcwd(cwd, sizeof(cwd)) != NULL) return cwd;
     return "erro ao obter diretorio";
 }
 
+// Manipula comando "date +%s", retornando timestamp atual como string.
 char* handle_date_command() {
     static char buffer[32];
     snprintf(buffer, sizeof(buffer), "%lld", (long long)time(NULL));
     return buffer;
 }
 
+// Trata comando "kill", extraindo sinal e PID e chamando kill().
 void handle_kill_command(char* cmd) {
     int pid;
     int sinal = 9; 
@@ -102,6 +109,7 @@ void handle_kill_command(char* cmd) {
     }
 }
 
+// Executa programa externo via fork + execv e espera término do processo.
 int handle_execute(char *path, char **args) {
     pid_t pid = fork();
 
@@ -121,20 +129,19 @@ int handle_execute(char *path, char **args) {
     return 0;
 }
 
+// Loop principal do shell
 int main() {
     char *cmd = NULL;
 
     while (1) {
         print_prompt_line();
 
-        // Substitui scanf por readline para capturar entrada do usuário
         cmd = readline("");
         if (cmd == NULL) {
             printf("\n");
             break;
         }
 
-        // Adiciona o comando ao histórico, se não for vazio
         if (strlen(cmd) > 0) {
             add_history(cmd);
         }
