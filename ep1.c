@@ -21,14 +21,14 @@ pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 int core_process[1024];
 int proc_running[50];
 int preempt_flag[50];
-int rem_dt_g[50];
-int processos_finalizados_g = 0;
-long long inicio_simulacao_ms;
+int tempo_restante_seg[50];
+int total_processos_concluidos = 0;
+long long inicio_simulacao_seg;
 
-long long current_time_ms() {
+long long current_time_sec() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (ts.tv_sec * 1000LL) + (ts.tv_nsec / 1000000LL);
+    return ts.tv_sec;
 }
 
 int get_num_cores(void) {
@@ -42,13 +42,14 @@ void init_state(Processo processos[], int total_processos) {
     for (int i = 0; i < 1024; i++) core_process[i] = -1;
     memset(proc_running, 0, sizeof(proc_running));
     memset(preempt_flag, 0, sizeof(preempt_flag));
-    processos_finalizados_g = 0;
+    total_processos_concluidos = 0;
     total_preempcoes = 0;
-    inicio_simulacao_ms = current_time_ms();
+    
+    inicio_simulacao_seg = current_time_sec();
     
     for (int i = 0; i < total_processos; i++) {
         processos[i].fl_completo = 0;
-        rem_dt_g[i] = processos[i].dt * 1000;
+        tempo_restante_seg[i] = processos[i].dt; // Não multiplica mais por 1000
     }
 }
 
@@ -63,7 +64,7 @@ void* executar_thread_tick(void* arg) {
     pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
 
     while (1) {
-        usleep(100000);
+        sleep(1);
 
         pthread_mutex_lock(&state_mutex);
         
@@ -74,15 +75,15 @@ void* executar_thread_tick(void* arg) {
             break;
         }
 
-        rem_dt_g[idx] -= 100;
+        tempo_restante_seg[idx] -= 1;
         
-        if (rem_dt_g[idx] <= 0) {
+        if (tempo_restante_seg[idx] <= 0) {
             if (!args->processo->fl_completo) {
                 args->processo->fl_completo = 1;
-                processos_finalizados_g++;
+                total_processos_concluidos++;
                 
-                long long tempo_atual_ms = current_time_ms() - inicio_simulacao_ms;
-                args->processo->tf = (int)(tempo_atual_ms / 1000);
+                long long tempo_atual_seg = current_time_sec() - inicio_simulacao_seg;
+                args->processo->tf = (int)tempo_atual_seg;
                 args->processo->tr = args->processo->tf - args->processo->t0;
                 args->processo->fl_cumpriu = (args->processo->tf <= args->processo->deadline) ? 1 : 0;
             }
@@ -99,19 +100,18 @@ void* executar_thread_tick(void* arg) {
     return NULL;
 }
 
-
 void handle_sjf(Processo processos[], int total_processos) {
     init_state(processos, total_processos);
     int num_cores = get_num_cores();
 
     while (1) {
         pthread_mutex_lock(&state_mutex);
-        if (processos_finalizados_g >= total_processos) {
+        if (total_processos_concluidos >= total_processos) {
             pthread_mutex_unlock(&state_mutex);
             break;
         }
-        long long tempo_atual_ms = current_time_ms() - inicio_simulacao_ms;
-        int tempo_atual_seg = (int)(tempo_atual_ms / 1000);
+        
+        long long tempo_atual_seg = current_time_sec() - inicio_simulacao_seg;
 
         for (int c = 0; c < num_cores; c++) {
             if (core_process[c] == -1) {
@@ -155,17 +155,17 @@ void handle_rr(Processo processos[], int total_processos, int quantum) {
 
     while (1) {
         pthread_mutex_lock(&state_mutex);
-        if (processos_finalizados_g >= total_processos) {
+        if (total_processos_concluidos >= total_processos) {
             pthread_mutex_unlock(&state_mutex);
             break;
         }
-        long long tempo_atual_ms = current_time_ms() - inicio_simulacao_ms;
-        int tempo_atual_seg = (int)(tempo_atual_ms / 1000);
+        
+        long long tempo_atual_seg = current_time_sec() - inicio_simulacao_seg;
 
         for (int c = 0; c < num_cores; c++) {
             int p = core_process[c];
-            if (p != -1 && !preempt_flag[p] && rem_dt_g[p] > 0) {
-                if (tempo_atual_ms - tempo_inicio_core[c] >= quantum * 1000LL) {
+            if (p != -1 && !preempt_flag[p] && tempo_restante_seg[p] > 0) {
+                if (tempo_atual_seg - tempo_inicio_core[c] >= quantum) {
                     preempt_flag[p] = 1;
                     total_preempcoes++;
                 }
@@ -178,7 +178,7 @@ void handle_rr(Processo processos[], int total_processos, int quantum) {
                 
                 for (int i = 0; i < total_processos; i++) {
                     int idx = (next_index + i) % total_processos;
-                    if (processos[idx].t0 <= tempo_atual_seg && !processos[idx].fl_completo && !proc_running[idx] && rem_dt_g[idx] > 0) {
+                    if (processos[idx].t0 <= tempo_atual_seg && !processos[idx].fl_completo && !proc_running[idx] && tempo_restante_seg[idx] > 0) {
                         indice_escolhido = idx;
                         next_index = (idx + 1) % total_processos;
                         break;
@@ -189,7 +189,7 @@ void handle_rr(Processo processos[], int total_processos, int quantum) {
                     core_process[c] = indice_escolhido;
                     proc_running[indice_escolhido] = 1;
                     preempt_flag[indice_escolhido] = 0;
-                    tempo_inicio_core[c] = tempo_atual_ms;
+                    tempo_inicio_core[c] = tempo_atual_seg;
 
                     TaskParams *args = malloc(sizeof(TaskParams));
                     args->processo = &processos[indice_escolhido];
@@ -207,29 +207,28 @@ void handle_rr(Processo processos[], int total_processos, int quantum) {
     }
 }
 
-
 void handle_prioridade(Processo processos[], int total_processos) {
     init_state(processos, total_processos);
     int num_cores = get_num_cores();
 
     while (1) {
         pthread_mutex_lock(&state_mutex);
-        if (processos_finalizados_g >= total_processos) {
+        if (total_processos_concluidos >= total_processos) {
             pthread_mutex_unlock(&state_mutex);
             break;
         }
-        long long tempo_atual_ms = current_time_ms() - inicio_simulacao_ms;
-        int tempo_atual_seg = (int)(tempo_atual_ms / 1000);
+        
+        long long tempo_atual_seg = current_time_sec() - inicio_simulacao_seg;
 
         for (int c = 0; c < num_cores; c++) {
             int p = core_process[c];
-            if (p != -1 && !preempt_flag[p] && rem_dt_g[p] > 0) {
-                int slack_p = processos[p].deadline - tempo_atual_seg - (rem_dt_g[p] / 1000);
+            if (p != -1 && !preempt_flag[p] && tempo_restante_seg[p] > 0) {
+                int slack_p = processos[p].deadline - tempo_atual_seg - tempo_restante_seg[p];
                 
                 int tem_melhor = 0;
                 for (int i = 0; i < total_processos; i++) {
-                    if (processos[i].t0 <= tempo_atual_seg && !processos[i].fl_completo && !proc_running[i] && rem_dt_g[i] > 0) {
-                        int slack_i = processos[i].deadline - tempo_atual_seg - (rem_dt_g[i] / 1000);
+                    if (processos[i].t0 <= tempo_atual_seg && !processos[i].fl_completo && !proc_running[i] && tempo_restante_seg[i] > 0) {
+                        int slack_i = processos[i].deadline - tempo_atual_seg - tempo_restante_seg[i];
                         
                         if (slack_i < slack_p ||
                            (slack_i == slack_p && processos[i].deadline < processos[p].deadline) ||
@@ -253,8 +252,8 @@ void handle_prioridade(Processo processos[], int total_processos) {
                 int melhor_slack = INT_MAX;
 
                 for (int i = 0; i < total_processos; i++) {
-                    if (processos[i].t0 <= tempo_atual_seg && !processos[i].fl_completo && !proc_running[i] && rem_dt_g[i] > 0) {
-                        int slack = processos[i].deadline - tempo_atual_seg - (rem_dt_g[i] / 1000);
+                    if (processos[i].t0 <= tempo_atual_seg && !processos[i].fl_completo && !proc_running[i] && tempo_restante_seg[i] > 0) {
+                        int slack = processos[i].deadline - tempo_atual_seg - tempo_restante_seg[i];
                         
                         int p_deadline = (indice_escolhido == -1) ? INT_MAX : processos[indice_escolhido].deadline;
                         int p_t0 = (indice_escolhido == -1) ? INT_MAX : processos[indice_escolhido].t0;
