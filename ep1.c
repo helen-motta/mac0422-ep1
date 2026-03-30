@@ -11,207 +11,281 @@
 
 typedef struct {
     Processo *processo;
-    int slice;
     int core;
+    int idx;
 } TaskParams;
 
 int total_preempcoes = 0;
+pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int core_process[1024];
+int proc_running[50];
+int preempt_flag[50];
+int rem_dt_g[50];
+int processos_finalizados_g = 0;
+long long inicio_simulacao_ms;
+
+long long current_time_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (ts.tv_sec * 1000LL) + (ts.tv_nsec / 1000000LL);
+}
 
 int get_num_cores(void) {
     cpu_set_t set;
     CPU_ZERO(&set);
-
     sched_getaffinity(0, sizeof(set), &set);
-
     return CPU_COUNT(&set);
 }
 
-void* executar_slice(void* arg) {
+void init_state(Processo processos[], int total_processos) {
+    for (int i = 0; i < 1024; i++) core_process[i] = -1;
+    memset(proc_running, 0, sizeof(proc_running));
+    memset(preempt_flag, 0, sizeof(preempt_flag));
+    processos_finalizados_g = 0;
+    total_preempcoes = 0;
+    inicio_simulacao_ms = current_time_ms();
+    
+    for (int i = 0; i < total_processos; i++) {
+        processos[i].fl_completo = 0;
+        rem_dt_g[i] = processos[i].dt * 1000;
+    }
+}
+
+void* executar_thread_tick(void* arg) {
     TaskParams *args = (TaskParams*)arg;
+    int idx = args->idx;
+    int c = args->core;
+    
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(args->core, &cpuset);
+    CPU_SET(c, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
 
-    pthread_t tid = pthread_self();
-    pthread_setaffinity_np(tid, sizeof(cpuset), &cpuset);
+    while (1) {
+        usleep(100000);
 
-    sleep(args->slice);
+        pthread_mutex_lock(&state_mutex);
+        
+        if (preempt_flag[idx] == 1) {
+            core_process[c] = -1;
+            proc_running[idx] = 0;
+            pthread_mutex_unlock(&state_mutex);
+            break;
+        }
+
+        rem_dt_g[idx] -= 100;
+        
+        if (rem_dt_g[idx] <= 0) {
+            if (!args->processo->fl_completo) {
+                args->processo->fl_completo = 1;
+                processos_finalizados_g++;
+                
+                long long tempo_atual_ms = current_time_ms() - inicio_simulacao_ms;
+                args->processo->tf = (int)(tempo_atual_ms / 1000);
+                args->processo->tr = args->processo->tf - args->processo->t0;
+                args->processo->fl_cumpriu = (args->processo->tf <= args->processo->deadline) ? 1 : 0;
+            }
+            core_process[c] = -1;
+            proc_running[idx] = 0;
+            pthread_mutex_unlock(&state_mutex);
+            break;
+        }
+
+        pthread_mutex_unlock(&state_mutex);
+    }
+    
     free(args);
     return NULL;
 }
 
+
 void handle_sjf(Processo processos[], int total_processos) {
-    int processos_finalizados = 0;
-    int tempo_atual = 0;
-    
-    for(int i = 0; i < total_processos; i++) {
-        processos[i].fl_completo = 0;
-    }
+    init_state(processos, total_processos);
+    int num_cores = get_num_cores();
 
-    time_t inicio = time(NULL);
+    while (1) {
+        pthread_mutex_lock(&state_mutex);
+        if (processos_finalizados_g >= total_processos) {
+            pthread_mutex_unlock(&state_mutex);
+            break;
+        }
+        long long tempo_atual_ms = current_time_ms() - inicio_simulacao_ms;
+        int tempo_atual_seg = (int)(tempo_atual_ms / 1000);
 
-    while (processos_finalizados < total_processos) {
-        int indice_menor = -1;
+        for (int c = 0; c < num_cores; c++) {
+            if (core_process[c] == -1) {
+                int indice_menor = -1;
+                
+                for (int i = 0; i < total_processos; i++) {
+                    if (processos[i].t0 <= tempo_atual_seg && !processos[i].fl_completo && !proc_running[i]) {
+                        if (indice_menor == -1 || processos[i].dt < processos[indice_menor].dt || 
+                           (processos[i].dt == processos[indice_menor].dt && processos[i].t0 < processos[indice_menor].t0)) {
+                            indice_menor = i;
+                        }
+                    }
+                }
 
-        for (int i = 0; i < total_processos; i++) {
-            if (processos[i].t0 <= tempo_atual && !processos[i].fl_completo) {
-                if (indice_menor == -1 || processos[i].dt < processos[indice_menor].dt || 
-                (processos[i].dt == processos[indice_menor].dt && processos[i].t0 < processos[indice_menor].t0)) {
-                    indice_menor = i;
+                if (indice_menor != -1) {
+                    core_process[c] = indice_menor;
+                    proc_running[indice_menor] = 1;
+                    preempt_flag[indice_menor] = 0;
+
+                    TaskParams *args = malloc(sizeof(TaskParams));
+                    args->processo = &processos[indice_menor];
+                    args->core = c;
+                    args->idx = indice_menor;
+
+                    pthread_t tid;
+                    pthread_create(&tid, NULL, executar_thread_tick, args);
+                    pthread_detach(tid);
                 }
             }
         }
-
-        if (indice_menor == -1) {
-            sleep(1);
-            tempo_atual = (int)(time(NULL) - inicio);
-        } else {
-            int num_cores = get_num_cores();
-            int core = indice_menor % num_cores;
-            pthread_t tid;
-            TaskParams *args = malloc(sizeof(TaskParams));
-            args->processo = &processos[indice_menor];
-            args->slice = processos[indice_menor].dt;
-            args->core = core;
-
-            pthread_create(&tid, NULL, executar_slice, args);
-            pthread_join(tid, NULL);
-
-            processos[indice_menor].fl_completo = 1;
-            processos_finalizados++;
-
-            tempo_atual = (int)(time(NULL) - inicio);
-
-            processos[indice_menor].tf = tempo_atual;
-            processos[indice_menor].tr = processos[indice_menor].tf - processos[indice_menor].t0;
-            
-            if (processos[indice_menor].tf <= processos[indice_menor].deadline) {
-                processos[indice_menor].fl_cumpriu = 1;
-            } else {
-                processos[indice_menor].fl_cumpriu = 0;
-            }
-        }
+        pthread_mutex_unlock(&state_mutex);
+        usleep(50000);
     }
 }
 
 void handle_rr(Processo processos[], int total_processos, int quantum) {
-    int processos_finalizados = 0;
-    int tempo_atual = 0;
-    int rem_dt[50];
-
-    for (int i = 0; i < total_processos; i++) {
-        rem_dt[i] = processos[i].dt;
-        processos[i].fl_completo = 0;
-    }
-
-    time_t inicio = time(NULL);
+    init_state(processos, total_processos);
+    int num_cores = get_num_cores();
     int next_index = 0;
+    long long tempo_inicio_core[1024] = {0};
 
-    while (processos_finalizados < total_processos) {
-        int indice_escolhido = -1;
-
-        for (int i = 0; i < total_processos; i++) {
-            int idx = (next_index + i) % total_processos;
-            if (processos[idx].t0 <= tempo_atual && !processos[idx].fl_completo && rem_dt[idx] > 0) {
-                indice_escolhido = idx;
-                break;
-            }
+    while (1) {
+        pthread_mutex_lock(&state_mutex);
+        if (processos_finalizados_g >= total_processos) {
+            pthread_mutex_unlock(&state_mutex);
+            break;
         }
+        long long tempo_atual_ms = current_time_ms() - inicio_simulacao_ms;
+        int tempo_atual_seg = (int)(tempo_atual_ms / 1000);
 
-        if (indice_escolhido == -1) {
-            sleep(1);
-            tempo_atual = (int)(time(NULL) - inicio);
-            continue;
-        }
-
-        int num_cores = get_num_cores();
-        int core = indice_escolhido % num_cores;
-        pthread_t tid;
-        TaskParams *args = malloc(sizeof(TaskParams));
-        args->processo = &processos[indice_escolhido];
-        args->slice = quantum;
-        args->core = core;
-
-        pthread_create(&tid, NULL, executar_slice, args);
-        pthread_join(tid, NULL);
-
-        rem_dt[indice_escolhido] -= quantum;
-        tempo_atual = (int)(time(NULL) - inicio);
-
-        if (rem_dt[indice_escolhido] <= 0) {
-            processos[indice_escolhido].fl_completo = 1;
-            processos_finalizados++;
-            processos[indice_escolhido].tf = tempo_atual;
-            processos[indice_escolhido].tr = processos[indice_escolhido].tf - processos[indice_escolhido].t0;
-            processos[indice_escolhido].fl_cumpriu = (processos[indice_escolhido].tf <= processos[indice_escolhido].deadline) ? 1 : 0;
-        } else {
-            total_preempcoes++;
-        }
-
-        next_index = (indice_escolhido + 1) % total_processos;
-    }
-}
-
-void handle_prioridade(Processo processos[], int total_processos) {
-    int processos_finalizados = 0;
-    int tempo_atual = 0;
-    int rem_dt[50];
-
-    for (int i = 0; i < total_processos; i++) {
-        rem_dt[i] = processos[i].dt;
-        processos[i].fl_completo = 0;
-    }
-
-    time_t inicio = time(NULL);
-
-    while (processos_finalizados < total_processos) {
-        int indice_escolhido = -1;
-        int melhor_slack = INT_MAX;
-
-        for (int i = 0; i < total_processos; i++) {
-            if (processos[i].t0 <= tempo_atual && !processos[i].fl_completo && rem_dt[i] > 0) {
-                int slack = processos[i].deadline - tempo_atual - rem_dt[i];
-
-                if (slack < melhor_slack ||
-                    (slack == melhor_slack && processos[i].deadline < processos[indice_escolhido].deadline) ||
-                    (slack == melhor_slack && processos[i].deadline == processos[indice_escolhido].deadline && processos[i].t0 < processos[indice_escolhido].t0)) {
-                    melhor_slack = slack;
-                    indice_escolhido = i;
+        for (int c = 0; c < num_cores; c++) {
+            int p = core_process[c];
+            if (p != -1 && !preempt_flag[p] && rem_dt_g[p] > 0) {
+                if (tempo_atual_ms - tempo_inicio_core[c] >= quantum * 1000LL) {
+                    preempt_flag[p] = 1;
+                    total_preempcoes++;
                 }
             }
         }
 
-        if (indice_escolhido == -1) {
-            sleep(1);
-            tempo_atual = (int)(time(NULL) - inicio);
-            continue;
+        for (int c = 0; c < num_cores; c++) {
+            if (core_process[c] == -1) {
+                int indice_escolhido = -1;
+                
+                for (int i = 0; i < total_processos; i++) {
+                    int idx = (next_index + i) % total_processos;
+                    if (processos[idx].t0 <= tempo_atual_seg && !processos[idx].fl_completo && !proc_running[idx] && rem_dt_g[idx] > 0) {
+                        indice_escolhido = idx;
+                        next_index = (idx + 1) % total_processos;
+                        break;
+                    }
+                }
+
+                if (indice_escolhido != -1) {
+                    core_process[c] = indice_escolhido;
+                    proc_running[indice_escolhido] = 1;
+                    preempt_flag[indice_escolhido] = 0;
+                    tempo_inicio_core[c] = tempo_atual_ms;
+
+                    TaskParams *args = malloc(sizeof(TaskParams));
+                    args->processo = &processos[indice_escolhido];
+                    args->core = c;
+                    args->idx = indice_escolhido;
+
+                    pthread_t tid;
+                    pthread_create(&tid, NULL, executar_thread_tick, args);
+                    pthread_detach(tid);
+                }
+            }
+        }
+        pthread_mutex_unlock(&state_mutex);
+        usleep(50000);
+    }
+}
+
+
+void handle_prioridade(Processo processos[], int total_processos) {
+    init_state(processos, total_processos);
+    int num_cores = get_num_cores();
+
+    while (1) {
+        pthread_mutex_lock(&state_mutex);
+        if (processos_finalizados_g >= total_processos) {
+            pthread_mutex_unlock(&state_mutex);
+            break;
+        }
+        long long tempo_atual_ms = current_time_ms() - inicio_simulacao_ms;
+        int tempo_atual_seg = (int)(tempo_atual_ms / 1000);
+
+        for (int c = 0; c < num_cores; c++) {
+            int p = core_process[c];
+            if (p != -1 && !preempt_flag[p] && rem_dt_g[p] > 0) {
+                int slack_p = processos[p].deadline - tempo_atual_seg - (rem_dt_g[p] / 1000);
+                
+                int tem_melhor = 0;
+                for (int i = 0; i < total_processos; i++) {
+                    if (processos[i].t0 <= tempo_atual_seg && !processos[i].fl_completo && !proc_running[i] && rem_dt_g[i] > 0) {
+                        int slack_i = processos[i].deadline - tempo_atual_seg - (rem_dt_g[i] / 1000);
+                        
+                        if (slack_i < slack_p ||
+                           (slack_i == slack_p && processos[i].deadline < processos[p].deadline) ||
+                           (slack_i == slack_p && processos[i].deadline == processos[p].deadline && processos[i].t0 < processos[p].t0)) {
+                            tem_melhor = 1;
+                            break;
+                        }
+                    }
+                }
+
+                if (tem_melhor) {
+                    preempt_flag[p] = 1;
+                    total_preempcoes++;
+                }
+            }
         }
 
-        int quantum = 1;
+        for (int c = 0; c < num_cores; c++) {
+            if (core_process[c] == -1) {
+                int indice_escolhido = -1;
+                int melhor_slack = INT_MAX;
 
-        int num_cores = get_num_cores();
-        int core = indice_escolhido % num_cores;
-        pthread_t tid;
-        TaskParams *args = malloc(sizeof(TaskParams));
-        args->processo = &processos[indice_escolhido];
-        args->slice = quantum;
-        args->core = core;
+                for (int i = 0; i < total_processos; i++) {
+                    if (processos[i].t0 <= tempo_atual_seg && !processos[i].fl_completo && !proc_running[i] && rem_dt_g[i] > 0) {
+                        int slack = processos[i].deadline - tempo_atual_seg - (rem_dt_g[i] / 1000);
+                        
+                        int p_deadline = (indice_escolhido == -1) ? INT_MAX : processos[indice_escolhido].deadline;
+                        int p_t0 = (indice_escolhido == -1) ? INT_MAX : processos[indice_escolhido].t0;
 
-        pthread_create(&tid, NULL, executar_slice, args);
-        pthread_join(tid, NULL);
+                        if (slack < melhor_slack ||
+                            (slack == melhor_slack && processos[i].deadline < p_deadline) ||
+                            (slack == melhor_slack && processos[i].deadline == p_deadline && processos[i].t0 < p_t0)) {
+                            melhor_slack = slack;
+                            indice_escolhido = i;
+                        }
+                    }
+                }
 
-        rem_dt[indice_escolhido] -= quantum;
-        tempo_atual = (int)(time(NULL) - inicio);
+                if (indice_escolhido != -1) {
+                    core_process[c] = indice_escolhido;
+                    proc_running[indice_escolhido] = 1;
+                    preempt_flag[indice_escolhido] = 0;
 
-        if (rem_dt[indice_escolhido] <= 0) {
-            processos[indice_escolhido].fl_completo = 1;
-            processos_finalizados++;
-            processos[indice_escolhido].tf = tempo_atual;
-            processos[indice_escolhido].tr = processos[indice_escolhido].tf - processos[indice_escolhido].t0;
-            processos[indice_escolhido].fl_cumpriu = (processos[indice_escolhido].tf <= processos[indice_escolhido].deadline) ? 1 : 0;
-        } else {
-            total_preempcoes++;
+                    TaskParams *args = malloc(sizeof(TaskParams));
+                    args->processo = &processos[indice_escolhido];
+                    args->core = c;
+                    args->idx = indice_escolhido;
+
+                    pthread_t tid;
+                    pthread_create(&tid, NULL, executar_thread_tick, args);
+                    pthread_detach(tid);
+                }
+            }
         }
+        pthread_mutex_unlock(&state_mutex);
+        usleep(50000);
     }
 }
 
