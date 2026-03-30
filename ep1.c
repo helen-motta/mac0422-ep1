@@ -147,7 +147,7 @@ void handle_sjf(Processo processos[], int total_processos) {
             }
         }
         pthread_mutex_unlock(&state_mutex);
-        usleep(50000);
+        sleep(1);
     }
 }
 
@@ -208,7 +208,7 @@ void handle_rr(Processo processos[], int total_processos, int quantum) {
             }
         }
         pthread_mutex_unlock(&state_mutex);
-        usleep(50000);
+        sleep(1);
     }
 }
 
@@ -290,7 +290,7 @@ void handle_prioridade(Processo processos[], int total_processos) {
             }
         }
         pthread_mutex_unlock(&state_mutex);
-        usleep(50000);
+        sleep(1);
     }
 }
 
